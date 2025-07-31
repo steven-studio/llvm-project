@@ -102,6 +102,7 @@ RASegmentTree::RASegmentTree(const RegAllocFilterFunc F)
   : MachineFunctionPass(ID)
 {
   // 可以初始化變數
+  llvm::errs() << "[DEBUG] RASegmentTree constructor called\n";
 }
 
 void RASegmentTree::getAnalysisUsage(AnalysisUsage &AU) const {
@@ -156,6 +157,7 @@ MCRegister RASegmentTree::selectOrSplit(const LiveInterval &VirtReg,
 // 導出 factory function（對應 header 宣告）
 //-----------------
 FunctionPass *llvm::createSegmentTreeRegisterAllocator() {
+  llvm::errs() << "[DEBUG] createSegmentTreeRegisterAllocator called\n";
   return new RASegmentTree();
 }
 
@@ -167,3 +169,20 @@ static RegisterRegAlloc segmentTreeRegAlloc(
     "Segment Tree Register Allocator",
     llvm::createSegmentTreeRegisterAllocator
 );
+
+// 強制初始化函數
+extern "C" void LLVMInitializeSegmentTreeRegisterAllocator() {
+  llvm::errs() << "[DEBUG] LLVMInitializeSegmentTreeRegisterAllocator called\n";
+  // 強制引用靜態變量，確保不被優化掉
+  (void)&segmentTreeRegAlloc;
+}
+
+// 在模塊載入時自動調用
+namespace {
+  struct ForceInit {
+    ForceInit() {
+      LLVMInitializeSegmentTreeRegisterAllocator();
+    }
+  };
+  static ForceInit forceInit;
+}
