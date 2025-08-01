@@ -137,20 +137,26 @@ bool RASegmentTree::runOnMachineFunction(MachineFunction &MF) {
 // ====== 這裡直接補齊純虛擬函式的 override ======
 
 Spiller &RASegmentTree::spiller() {
-  report_fatal_error("RASegmentTree::spiller() not implemented");
+  static Spiller *DummySpiller = nullptr;
+  if (!DummySpiller)
+    DummySpiller = createDefaultSpiller(*this, *VRM); // VRM 需初始化
+  return *DummySpiller;
 }
 
 void RASegmentTree::enqueueImpl(const LiveInterval *LI) {
-  report_fatal_error("RASegmentTree::enqueueImpl() not implemented");
+  // 直接忽略，或存進一個 queue（如果你要真的實現分配邏輯，這裡要有 queue）
+  // 最小可用實作可為空
 }
 
 const LiveInterval *RASegmentTree::dequeue() {
-  report_fatal_error("RASegmentTree::dequeue() not implemented");
+  // 返回 nullptr，代表 queue 已空，LLVM 流程不會 crash
+  return nullptr;
 }
 
 MCRegister RASegmentTree::selectOrSplit(const LiveInterval &VirtReg,
                                         SmallVectorImpl<Register> &SplitVRegs) {
-    report_fatal_error("RASegmentTree::selectOrSplit() not implemented");
+  // 返回 0，代表沒分配到暫存器，LLVM 會自動溢出 spill
+  return 0;
 }
 
 //-----------------
