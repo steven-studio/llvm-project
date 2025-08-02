@@ -174,18 +174,20 @@ static RegisterRegAlloc segmentTreeRegAlloc(
 );
 
 // 強制初始化函數
-extern "C" void LLVMInitializeSegmentTreeRegisterAllocator() {
+namespace llvm {
+void LLVMInitializeSegmentTreeRegisterAllocator() {
   llvm::errs() << "[DEBUG] LLVMInitializeSegmentTreeRegisterAllocator called\n";
   // 強制引用靜態變量，確保不被優化掉
   (void)&segmentTreeRegAlloc;
 }
-
-// 在模塊載入時自動調用
-namespace {
-  struct ForceInit {
-    ForceInit() {
-      LLVMInitializeSegmentTreeRegisterAllocator();
-    }
-  };
-  static ForceInit forceInit;
 }
+
+// // 在模塊載入時自動調用
+// namespace {
+//   struct ForceInit {
+//     ForceInit() {
+//       LLVMInitializeSegmentTreeRegisterAllocator();
+//     }
+//   };
+//   static ForceInit forceInit;
+// }
