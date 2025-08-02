@@ -340,6 +340,8 @@ LLVM_ABI void initializeWinEHPreparePass(PassRegistry &);
 LLVM_ABI void initializeWriteBitcodePassPass(PassRegistry &);
 LLVM_ABI void initializeXRayInstrumentationLegacyPass(PassRegistry &);
 
+LLVM_ABI void LLVMInitializeSegmentTreeRegisterAllocator();
+
 } // end namespace llvm
 
 #endif // LLVM_INITIALIZEPASSES_H

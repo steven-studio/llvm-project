@@ -137,10 +137,7 @@ bool RASegmentTree::runOnMachineFunction(MachineFunction &MF) {
 // ====== 這裡直接補齊純虛擬函式的 override ======
 
 Spiller &RASegmentTree::spiller() {
-  static Spiller *DummySpiller = nullptr;
-  if (!DummySpiller)
-    DummySpiller = createDefaultSpiller(*this, *VRM); // VRM 需初始化
-  return *DummySpiller;
+  report_fatal_error("RASegmentTree::spiller() not implemented");
 }
 
 void RASegmentTree::enqueueImpl(const LiveInterval *LI) {

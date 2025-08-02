@@ -145,4 +145,5 @@ void llvm::initializeCodeGen(PassRegistry &Registry) {
   initializeWasmEHPreparePass(Registry);
   initializeWinEHPreparePass(Registry);
   initializeXRayInstrumentationLegacyPass(Registry);
+  LLVMInitializeSegmentTreeRegisterAllocator();
 }

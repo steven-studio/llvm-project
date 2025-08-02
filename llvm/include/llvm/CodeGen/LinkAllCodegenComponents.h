@@ -19,6 +19,11 @@
 #include "llvm/Support/AlwaysTrue.h"
 #include "llvm/Target/TargetMachine.h"
 
+// ===== 關鍵的宣告必須在這裡！=====
+namespace llvm {
+  void LLVMInitializeSegmentTreeRegisterAllocator();
+}
+
 namespace {
   struct ForceCodegenLinking {
     ForceCodegenLinking() {
@@ -33,6 +38,7 @@ namespace {
       (void) llvm::createFastRegisterAllocator();
       (void) llvm::createBasicRegisterAllocator();
       (void) llvm::createGreedyRegisterAllocator();
+      (void) llvm::LLVMInitializeSegmentTreeRegisterAllocator();
       (void) llvm::createDefaultPBQPRegisterAllocator();
 
       (void)llvm::createBURRListDAGScheduler(nullptr,
