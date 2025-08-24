@@ -123,6 +123,10 @@ void RASegmentTree::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequiredID(LiveIntervalsID);                   // LIS（用 ID）
   AU.addRequiredID(LiveStacksID);                      // LSS（用 ID）
   AU.addRequired<MachineDominatorTreeWrapperPass>();   // MDT：WrapperPass
+  // AU.addRequired<MachineLoopInfo>();
+  // AU.addRequired<VirtRegMap>();
+  // AU.addRequired<LiveRegMatrix>();
+  // AU.addRequired<RegisterClassInfo>();
   AU.addRequired<LazyMachineBlockFrequencyInfoPass>();     // 從 Lazy 取 MBFI
   // ✘ AU.addRequired<LiveRegMatrix>();   // ← 刪掉
   MachineFunctionPass::getAnalysisUsage(AU);
@@ -141,7 +145,17 @@ bool RASegmentTree::runOnMachineFunction(MachineFunction &MF) {
   LocalVRM = std::make_unique<VirtRegMap>();
 
   MachineRegisterInfo &MRI = MF.getRegInfo();
+
+  // 可能為 0（例如函式沒有產生 vreg），做個保護
+  unsigned NumVRegs = MRI.getNumVirtRegs();
+  if (NumVRegs == 0) NumVRegs = 1;
+
+  SegmentTree ST(NumVRegs);  // 範圍索引對應 vreg 索引 [0, NumVRegs-1]
+
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+
+  // 1) 所有實體暫存器的總數（包含保留/不可分配）
+  unsigned NumPhysRegsTotal = TRI->getNumRegs();
 
   // 1) 建立「所有可分配的實體暫存器」池（先不分 RC；挑到時再檢 RC）
   //    也可以用 TRI->getAllocatableSet(MF) 之類 API；這裡簡化成從 regclasses 蒐集。
@@ -166,6 +180,12 @@ bool RASegmentTree::runOnMachineFunction(MachineFunction &MF) {
     for (MCRegister PR : AllPhys) {
       // 只檢查 RC 相容性
       if (!RC->contains(PR)) continue;
+      // if (!AllocatableSet.test(PR)) continue;           // 可分配/非保留
+      // if (isLiveInOutOrFixed(PR, MF)) continue;         // live-in/out、固定寄存器
+      // if (callClobbers(PR, LI, MF)) continue;           // regmask / call clobber
+      // if (violatesTiedOperand(PR, V, MI, TRI)) continue;// two-address / tied 約束
+      // if (subregOrLaneConflict(PR, V, LIS, TRI)) continue;// 子暫存器/lanemask
+      // if (aliasConflict(PR, V, LIS, PhysAssigned, TRI)) continue; // 別名/RegUnits
 
       bool Conflict = false;
       for (Register OV : PhysAssigned[PR]) {
@@ -186,68 +206,10 @@ bool RASegmentTree::runOnMachineFunction(MachineFunction &MF) {
       return false;
     }
   }
-  // for (Register V : MRI.reg_nodbg_operands()) {
-  //   if (!V.isVirtual()) continue;
-  //   if (!MRI.isAllocatable(V)) continue; // 一些 vreg 可能不需實體化
-
-  //   // 該 vreg 的類別，用於相容性檢查
-  //   const TargetRegisterClass *RC = MRI.getRegClass(V);
-
-  //   // LI：拿來做 overlaps 檢查
-  //   LiveInterval &LI = LIS.getInterval(V);
-
-  //   bool Assigned = false;
-  //   for (MCRegister PR : AllPhys) {
-  //     // 3.1 phys 是否屬於此 vreg 的 RC（必要條件）
-  //     if (!TRI->isTypeLegalForClass(*RC, TRI->getRegSizeInBits(PR, MF)))
-  //       continue;
-  //     if (!RC->contains(PR))  // 更直接：是否在 RC 裡
-  //       continue;
-
-  //     // 3.2 與目前已在此 phys 上的 vreg 做 LI 重疊檢查
-  //     bool Conflict = false;
-  //     for (Register OV : PhysAssigned[PR]) {
-  //       LiveInterval &OtherLI = LIS.getInterval(OV);
-  //       if (LI.overlaps(OtherLI)) { Conflict = true; break; }
-  //     }
-  //     if (Conflict) continue;
-
-  //     // 3.3 無衝突 → 指派
-  //     LocalVRM->assignVirt2Phys(V, PR);
-  //     PhysAssigned[PR].push_back(V);
-  //     Assigned = true;
-  //     break;
-  //   }
-
-  //   if (!Assigned) {
-  //     // 目前不支援 spill → 報錯並退出；之後接 spiller 再改
-  //     errs() << "[SegmentTree] cannot assign vreg " << V.id()
-  //            << " without spilling; aborting this MF\n";
-  //     return false;  // 或者直接 continue 跳過（僅 demo）
-  //   }
-  // }
 
   // 到這裡：已經完成「無 spill」的極簡分配
   return true; // 表示我們修改了 MF（VRM 被更新）
 }
-
-// bool RASegmentTree::runOnMachineFunction(MachineFunction &MF) {
-//   LLVM_DEBUG(dbgs() << "Running Segment Tree Register Allocator on "
-//                     << MF.getName() << "\n");
-//   errs() << "[RegAllocSegmentTree] Allocating registers for function: "
-//          << MF.getName() << "\n";
-//   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
-//   const TargetRegisterClass *MaxRC = nullptr;
-//   unsigned MaxPhys = 0;
-//   for (auto *RCIt : TRI->regclasses()) {
-//     if (RCIt->getNumRegs() > MaxPhys)
-//       MaxRC = RCIt, MaxPhys = RCIt->getNumRegs();
-//   }
-//   unsigned NumPhysRegs = MaxRC ? MaxRC->getNumRegs() : 32;
-//   SegmentTree segTree(NumPhysRegs);
-//   // ... 進一步實作 allocation logic
-//   return false; // No modification for now
-// }
 
 
 // ====== 這裡直接補齊純虛擬函式的 override ======
