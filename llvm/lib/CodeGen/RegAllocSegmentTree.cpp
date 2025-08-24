@@ -4,14 +4,27 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/CodeGen/RegAllocSegmentTree.h"
+#include "RegAllocSegmentTree.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/RegAllocRegistry.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/LiveIntervals.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/MachineDominators.h"
+#include "llvm/CodeGen/LiveStacks.h"
+#include "llvm/CodeGen/LazyMachineBlockFrequencyInfo.h"
 #include "llvm/Pass.h"
+#include "llvm/CodeGen/LiveRegMatrix.h"
+#include "llvm/CodeGen/VirtRegMap.h"
+#include "llvm/CodeGen/Spiller.h"
+
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"   // ← for report_fatal_error
 #include "llvm/Support/raw_ostream.h"
+
+#include <algorithm>
+#include <queue>
+#include <cassert>
 
 using namespace llvm;
 

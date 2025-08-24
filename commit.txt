@@ -1,0 +1,5 @@
+[CodeGen] Add Segment Tree demo register allocator
+
+Introduce a new experimental register allocator (RegAllocSegmentTree)
+using a segment tree structure. Currently compiles and integrates with
+the RegAllocRegistry, but spiller() and allocation logic are stubbed.
