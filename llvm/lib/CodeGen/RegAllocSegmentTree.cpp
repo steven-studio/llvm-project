@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RegAllocSegmentTree.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/RegAllocRegistry.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
@@ -119,8 +120,11 @@ RASegmentTree::RASegmentTree(const RegAllocFilterFunc F)
 }
 
 void RASegmentTree::getAnalysisUsage(AnalysisUsage &AU) const {
-  // 需要的分析 pass
-  // AU.addRequired<LiveIntervals>();
+  AU.addRequiredID(LiveIntervalsID);                   // LIS（用 ID）
+  AU.addRequiredID(LiveStacksID);                      // LSS（用 ID）
+  AU.addRequired<MachineDominatorTreeWrapperPass>();   // MDT：WrapperPass
+  AU.addRequired<LazyMachineBlockFrequencyInfoPass>();     // 從 Lazy 取 MBFI
+  // ✘ AU.addRequired<LiveRegMatrix>();   // ← 刪掉
   MachineFunctionPass::getAnalysisUsage(AU);
 }
 
@@ -129,22 +133,121 @@ void RASegmentTree::releaseMemory() {
 }
 
 bool RASegmentTree::runOnMachineFunction(MachineFunction &MF) {
-  LLVM_DEBUG(dbgs() << "Running Segment Tree Register Allocator on "
-                    << MF.getName() << "\n");
-  errs() << "[RegAllocSegmentTree] Allocating registers for function: "
-         << MF.getName() << "\n";
+  MFPtr = &MF;
+
+  auto &LIS = getAnalysisID<LiveIntervals>(&LiveIntervalsID);
+  LISPtr = &LIS;
+
+  LocalVRM = std::make_unique<VirtRegMap>();
+
+  MachineRegisterInfo &MRI = MF.getRegInfo();
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
-  const TargetRegisterClass *MaxRC = nullptr;
-  unsigned MaxPhys = 0;
-  for (auto *RCIt : TRI->regclasses()) {
-    if (RCIt->getNumRegs() > MaxPhys)
-      MaxRC = RCIt, MaxPhys = RCIt->getNumRegs();
+
+  // 1) 建立「所有可分配的實體暫存器」池（先不分 RC；挑到時再檢 RC）
+  //    也可以用 TRI->getAllocatableSet(MF) 之類 API；這裡簡化成從 regclasses 蒐集。
+  SmallVector<MCRegister, 64> AllPhys;
+  for (auto *RC : TRI->regclasses())
+    for (MCRegister PR : *RC)
+      AllPhys.push_back(PR);
+
+  // 2) 每個 phys reg 維護一組它目前已被指派的 vreg（用來做 LI 重疊檢查）
+  DenseMap<MCRegister, SmallVector<Register, 8>> PhysAssigned;
+
+  // 3) 遍歷函式裡的每個 vreg，嘗試指派一個 phys
+  // 遍歷所有 vreg（通用、安全）
+  for (unsigned I = 0, E = MRI.getNumVirtRegs(); I != E; ++I) {
+    Register V = Register::index2VirtReg(I);
+    if (MRI.reg_nodbg_empty(V)) continue;
+
+    const TargetRegisterClass *RC = MRI.getRegClass(V);
+    LiveInterval &LI = LIS.getInterval(V);
+
+    bool Assigned = false;
+    for (MCRegister PR : AllPhys) {
+      // 只檢查 RC 相容性
+      if (!RC->contains(PR)) continue;
+
+      bool Conflict = false;
+      for (Register OV : PhysAssigned[PR]) {
+        LiveInterval &OtherLI = LIS.getInterval(OV);
+        if (LI.overlaps(OtherLI)) { Conflict = true; break; }
+      }
+      if (Conflict) continue;
+
+      LocalVRM->assignVirt2Phys(V, PR);
+      PhysAssigned[PR].push_back(V);
+      Assigned = true;
+      break;
+    }
+
+    if (!Assigned) {
+      errs() << "[SegmentTree] cannot assign vreg " << V.id()
+            << " without spilling; aborting this MF\n";
+      return false;
+    }
   }
-  unsigned NumPhysRegs = MaxRC ? MaxRC->getNumRegs() : 32;
-  SegmentTree segTree(NumPhysRegs);
-  // ... 進一步實作 allocation logic
-  return false; // No modification for now
+  // for (Register V : MRI.reg_nodbg_operands()) {
+  //   if (!V.isVirtual()) continue;
+  //   if (!MRI.isAllocatable(V)) continue; // 一些 vreg 可能不需實體化
+
+  //   // 該 vreg 的類別，用於相容性檢查
+  //   const TargetRegisterClass *RC = MRI.getRegClass(V);
+
+  //   // LI：拿來做 overlaps 檢查
+  //   LiveInterval &LI = LIS.getInterval(V);
+
+  //   bool Assigned = false;
+  //   for (MCRegister PR : AllPhys) {
+  //     // 3.1 phys 是否屬於此 vreg 的 RC（必要條件）
+  //     if (!TRI->isTypeLegalForClass(*RC, TRI->getRegSizeInBits(PR, MF)))
+  //       continue;
+  //     if (!RC->contains(PR))  // 更直接：是否在 RC 裡
+  //       continue;
+
+  //     // 3.2 與目前已在此 phys 上的 vreg 做 LI 重疊檢查
+  //     bool Conflict = false;
+  //     for (Register OV : PhysAssigned[PR]) {
+  //       LiveInterval &OtherLI = LIS.getInterval(OV);
+  //       if (LI.overlaps(OtherLI)) { Conflict = true; break; }
+  //     }
+  //     if (Conflict) continue;
+
+  //     // 3.3 無衝突 → 指派
+  //     LocalVRM->assignVirt2Phys(V, PR);
+  //     PhysAssigned[PR].push_back(V);
+  //     Assigned = true;
+  //     break;
+  //   }
+
+  //   if (!Assigned) {
+  //     // 目前不支援 spill → 報錯並退出；之後接 spiller 再改
+  //     errs() << "[SegmentTree] cannot assign vreg " << V.id()
+  //            << " without spilling; aborting this MF\n";
+  //     return false;  // 或者直接 continue 跳過（僅 demo）
+  //   }
+  // }
+
+  // 到這裡：已經完成「無 spill」的極簡分配
+  return true; // 表示我們修改了 MF（VRM 被更新）
 }
+
+// bool RASegmentTree::runOnMachineFunction(MachineFunction &MF) {
+//   LLVM_DEBUG(dbgs() << "Running Segment Tree Register Allocator on "
+//                     << MF.getName() << "\n");
+//   errs() << "[RegAllocSegmentTree] Allocating registers for function: "
+//          << MF.getName() << "\n";
+//   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+//   const TargetRegisterClass *MaxRC = nullptr;
+//   unsigned MaxPhys = 0;
+//   for (auto *RCIt : TRI->regclasses()) {
+//     if (RCIt->getNumRegs() > MaxPhys)
+//       MaxRC = RCIt, MaxPhys = RCIt->getNumRegs();
+//   }
+//   unsigned NumPhysRegs = MaxRC ? MaxRC->getNumRegs() : 32;
+//   SegmentTree segTree(NumPhysRegs);
+//   // ... 進一步實作 allocation logic
+//   return false; // No modification for now
+// }
 
 
 // ====== 這裡直接補齊純虛擬函式的 override ======
@@ -194,13 +297,3 @@ void LLVMInitializeSegmentTreeRegisterAllocator() {
   (void)&segmentTreeRegAlloc;
 }
 }
-
-// // 在模塊載入時自動調用
-// namespace {
-//   struct ForceInit {
-//     ForceInit() {
-//       LLVMInitializeSegmentTreeRegisterAllocator();
-//     }
-//   };
-//   static ForceInit forceInit;
-// }
