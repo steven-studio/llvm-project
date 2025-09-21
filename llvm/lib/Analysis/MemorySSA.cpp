@@ -516,6 +516,16 @@ class ClobberWalker {
   UpwardsMemoryQuery *Query;
   unsigned *UpwardWalkLimit;
 
+  // --- Small clobber query cache -----------------------------------------
+  // Cache whether a given (MemoryAccess*, MemoryLocation::Ptr) was a clobber.
+  // We purposely key only on the pointer value for locality; size/AAInfo are
+  // usually less impactful for positive clobbers and would complicate the key.
+  // This cache is per-walk instance (cleared between top-level queries).
+  using ClobberKey = std::pair<const MemoryAccess*, MemoryLocation>;
+  mutable DenseMap<ClobberKey, bool> ClobberCache;
+
+  void resetLocalCache() { ClobberCache.clear(); }
+
   // Phi optimization bookkeeping:
   // List of DefPath to process during the current phi optimization walk.
   SmallVector<DefPath, 32> Paths;
@@ -566,8 +576,40 @@ class ClobberWalker {
       LimitAlreadyReached = true;
     }
 
+    // for (MemoryAccess *Current : def_chain(Desc.Last)) {
+    //   Desc.Last = Current;
+    //   if (Current == StopAt || Current == SkipStopAt)
+    //     return {Current, false};
+
+    //   if (auto *MD = dyn_cast<MemoryDef>(Current)) {
+    //     if (MSSA.isLiveOnEntryDef(MD))
+    //       return {MD, true};
+
+    //     if (!--*UpwardWalkLimit)
+    //       return {Current, true};
+
+    //     if (instructionClobbersQuery(MD, Desc.Loc, Query->Inst, *AA))
+    //       return {MD, true};
+    //   }
+    // }
+    auto IsPtrEqualToStoreDest = [](const Instruction *Inst,
+                                    const Value *Ptr) -> bool {
+      if (auto *SI = dyn_cast<StoreInst>(Inst))
+        return SI->getPointerOperand()->stripPointerCasts() ==
+               Ptr->stripPointerCasts();
+      if (auto *RMW = dyn_cast<AtomicRMWInst>(Inst))
+        return RMW->getPointerOperand()->stripPointerCasts() ==
+               Ptr->stripPointerCasts();
+      if (auto *CAS = dyn_cast<AtomicCmpXchgInst>(Inst))
+        return CAS->getPointerOperand()->stripPointerCasts() ==
+               Ptr->stripPointerCasts();
+      return false;
+    };
+
     for (MemoryAccess *Current : def_chain(Desc.Last)) {
       Desc.Last = Current;
+
+      // Respect explicit stopping points.
       if (Current == StopAt || Current == SkipStopAt)
         return {Current, false};
 
@@ -575,13 +617,60 @@ class ClobberWalker {
         if (MSSA.isLiveOnEntryDef(MD))
           return {MD, true};
 
+        // Walk budget: if已耗盡，視為已知 clobber，交給上層處理。
         if (!--*UpwardWalkLimit)
           return {Current, true};
 
-        if (instructionClobbersQuery(MD, Desc.Loc, Query->Inst, *AA))
+        Instruction *DefI = MD->getMemoryInst();
+
+        // --- Fast path 1: load-vs-load reordering check ------------------
+        if (auto *DefLoad = dyn_cast<LoadInst>(DefI)) {
+          if (auto *UseLoad = dyn_cast_or_null<LoadInst>(Query->Inst)) {
+            // 只有在兩個 load 可能 alias 時，才需要考慮重排約束
+            if (AA->alias(MemoryLocation::get(DefLoad), Desc.Loc) !=
+                AliasResult::NoAlias) {
+              if (!areLoadsReorderable(UseLoad, DefLoad)) {
+                // Non-reorderable => DefLoad acts as clobber for ordering.
+                return {MD, true};
+              }
+              // Reorderable 且 alias：此 def 不是 clobber，繼續往前找
+              continue;
+            }
+            // 不 alias，這個 DefLoad 不可能 clobber 目前的查詢
+          }
+        }
+
+        // --- Fast path 2: exact same destination pointer for stores -------
+        if (Desc.Loc.Ptr && IsPtrEqualToStoreDest(DefI, Desc.Loc.Ptr))
+          return {MD, true};
+
+        // --- Cache look-up -----------------------------------------------
+        bool IsClobberCached = false;
+        if (Desc.Loc.Ptr) {
+          auto K = std::make_pair(static_cast<const MemoryAccess *>(MD),
+                                  Desc.Loc);
+          auto It = ClobberCache.find(K);
+          if (It != ClobberCache.end()) {
+            IsClobberCached = It->second;
+            if (IsClobberCached)
+              return {MD, true};
+            // Not a clobber: continue without calling AA.
+            continue;
+          }
+        }
+
+        // --- Full AA query (and then cache) ------------------------------
+        bool Clobbers = instructionClobbersQuery(MD, Desc.Loc, Query->Inst, *AA);
+        if (Desc.Loc.Ptr) {
+          auto K = std::make_pair(static_cast<const MemoryAccess *>(MD),
+                                  Desc.Loc);
+          ClobberCache.try_emplace(K, Clobbers);
+        }
+        if (Clobbers)
           return {MD, true};
       }
     }
+
 
     if (LimitAlreadyReached)
       *UpwardWalkLimit = 0;
@@ -932,6 +1021,7 @@ public:
     AA = &BAA;
     Query = &Q;
     UpwardWalkLimit = &UpWalkLimit;
+    resetLocalCache();
     // Starting limit must be > 0.
     if (!UpWalkLimit)
       UpWalkLimit++;
@@ -2655,3 +2745,4 @@ bool upward_defs_iterator::IsGuaranteedLoopInvariant(const Value *Ptr) const {
   }
   return IsGuaranteedLoopInvariantBase(Ptr);
 }
+
