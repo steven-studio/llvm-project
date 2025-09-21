@@ -50,6 +50,8 @@
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/GraphWriter.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/Timer.h"
+#include "llvm/Support/TimeProfiler.h"
 #include <algorithm>
 #include <cassert>
 #include <iterator>
@@ -1490,6 +1492,7 @@ void MemorySSA::OptimizeUses::optimizeUsesInBlock(
 
 /// Optimize uses to point to their actual clobbering definitions.
 void MemorySSA::OptimizeUses::optimizeUses() {
+  llvm::TimeTraceScope TTS("MemorySSA::OptimizeUses::optimizeUses");
   SmallVector<MemoryAccess *, 16> VersionStack;
   DenseMap<MemoryLocOrCall, MemlocStackInfo> LocStackInfo;
   VersionStack.push_back(MSSA->getLiveOnEntryDef());
