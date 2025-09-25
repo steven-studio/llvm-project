@@ -498,12 +498,12 @@ class ClobberWalker {
   /// Represents a span of contiguous MemoryDefs, potentially ending in a
   /// MemoryPhi.
   struct DefPath {
-    MemoryLocation Loc;
+    MemoryLocation Loc; // 目前正在查詢的記憶體位置（MemoryLocation 裡包含指標、大小、AA 資訊）
     // Note that, because we always walk in reverse, Last will always dominate
     // First. Also note that First and Last are inclusive.
-    MemoryAccess *First;
-    MemoryAccess *Last;
-    std::optional<ListIndex> Previous;
+    MemoryAccess *First; // 最上游的MemoryAccess（在控制流上最接近函式入口點）
+    MemoryAccess *Last; // 最下游的MemoryAccess（在控制流上最接近查詢點）
+    std::optional<ListIndex> Previous; // optional 代表前一個路徑的索引可能「不存在」(用 std::nullopt 表示)
 
     DefPath(const MemoryLocation &Loc, MemoryAccess *First, MemoryAccess *Last,
             std::optional<ListIndex> Previous)
