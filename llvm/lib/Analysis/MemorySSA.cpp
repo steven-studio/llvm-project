@@ -514,9 +514,9 @@ class ClobberWalker {
         : DefPath(Loc, Init, Init, Previous) {}
   };
 
-  const MemorySSA &MSSA;
+  const MemorySSA &MSSA; // const reference：唯讀引用，不會複製，也不能修改原始 MemorySSA（memory 版本的 SSA 圖）
   DominatorTree &DT;
-  BatchAAResults *AA;
+  BatchAAResults *AA; // 👉 分析兩段記憶體存取（例如兩個指標操作）是否可能指向同一個位址。
   UpwardsMemoryQuery *Query;
   unsigned *UpwardWalkLimit;
 
@@ -525,6 +525,7 @@ class ClobberWalker {
   // We purposely key only on the pointer value for locality; size/AAInfo are
   // usually less impactful for positive clobbers and would complicate the key.
   // This cache is per-walk instance (cleared between top-level queries).
+
   using ClobberKey = std::pair<const MemoryAccess*, MemoryLocation>;
   mutable DenseMap<ClobberKey, bool> ClobberCache;
 
@@ -538,8 +539,51 @@ class ClobberWalker {
   DenseSet<ConstMemoryAccessPair> VisitedPhis;
 
   /// Find the nearest def or phi that `From` can legally be optimized to.
+  // define void @f(i1 %cond, i32* %p) {
+  // entry:
+  //   br i1 %cond, label %then, label %else
+
+  // then:
+  //   store i32 1, i32* %p
+  //   br label %merge
+
+  // else:
+  //   store i32 2, i32* %p
+  //   br label %merge
+
+  // merge:
+  //   %x = load i32, i32* %p
+  //   ret void
+  // }
+  // From 就是指向 merge 節點
+  // From->getBlock() 就是 merge block 這個基本區塊
+  // 在本例中：
+  //   BB = merge → Node = DT.getNode(merge)
+  //   第一次迴圈：Node = Node->getIDom() → entry
+  //   檢查 entry 是否有 BlockDefs：若沒有，下一次 getIDom() 為 nullptr → 跳出
+  //   因此回傳預設的 MSSA.getLiveOnEntryDef()。
+  // 重點：只會沿著「支配 merge 的基本區塊」往上找最近的定義（最後一個 def）。
+  // then/else 雖然各有 store，但它們彼此不支配 merge（走另一條分支就避開了），
+  // 所以不會被視為「所有路徑都經過」的定義，自然不會被當作 getWalkTarget 的結果。
+  //
+  // 若 entry 內本來就有對同一記憶體的 MemoryDef，這裡會在 entry 找到 Defs，
+  // 並回傳該區塊的最後一個 Def（&*Defs->rbegin()）。
+  // getLiveOnEntryDef() 就是函式進入前的抽象記憶體定義
+  // 不然像
+  // define i32 @f(i32* %p) {
+  // entry:
+  //   %x = load i32, i32* %p
+  //   ret i32 %x
+  // }
+  // 如果沒有 LiveOnEntryDef()，那就沒辦法知道 load %p 之前的記憶體狀態了
+  // 所以 MemorySSA 一定要有一個 liveOnEntry 定義，代表函式進入前的記憶體狀態
+  // 這樣在 merge block 裡的 load %p 就可以往上找到
+  //
+  // 這個 getWalkTarget(const MemoryPhi *From) 在 phi 的 case 下最後
+  // 可能回傳 MSSA.getLiveOnEntryDef()，看起來好像「丟掉了 phi 本身」，但實際上它不是在表示
+  //  phi 本身，而是在回答「這個 phi 再往上追，最靠近的定義是什麼？」。
   const MemoryAccess *getWalkTarget(const MemoryPhi *From) const {
-    assert(From->getNumOperands() && "Phi with no operands?");
+    assert(From->getNumOperands() && "Phi with no operands?"); // MemoryPhi 一定要至少有一個 operand，否則就是不合法的 IR。
 
     BasicBlock *BB = From->getBlock();
     MemoryAccess *Result = MSSA.getLiveOnEntryDef();
