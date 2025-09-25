@@ -492,6 +492,8 @@ namespace {
 class ClobberWalker {
   /// Save a few bytes by using unsigned instead of size_t.
   using ListIndex = unsigned;
+  // LLVM 程式碼庫假設 `unsigned` 在所有支援的平台上都是 32 位元。
+  // （C++ 標準只保證 >=16 位元，但實務上編譯器通常實作為 32 位元。）
 
   /// Represents a span of contiguous MemoryDefs, potentially ending in a
   /// MemoryPhi.
