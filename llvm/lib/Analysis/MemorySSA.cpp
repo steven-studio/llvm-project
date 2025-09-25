@@ -640,6 +640,15 @@ class ClobberWalker {
     //       return {MD, true};
     //   }
     // }
+    // IsPtrEqualToStoreDest：快速檢查一個指令是否「直接寫入指定的指標」。
+    // - 支援 store / atomicrmw / cmpxchg 三類會寫記憶體的指令
+    // 👉 簡單說：Instruction 代表「這個 MemoryDef 是哪一條指令產生的」
+    // 👉 Value* Ptr 代表「我們正在查詢的記憶體位置」
+    // - dyn_cast<StoreInst> 嘗試把 Instruction 轉型成 StoreInst*，失敗就回傳 nullptr
+    // - getPointerOperand() 取出這個指令實際操作的指標 (pointer operand)
+    // - stripPointerCasts() 移除中間轉換，比較底層指標是否相同
+    // - 如果相同，代表這個 MemoryDef 一定是 clobber，不需要再跑昂貴的 AA
+    // 所以這裡比較的是「這個 store/atomic 寫的位址」和「你正在查詢的位址」是不是同一個
     auto IsPtrEqualToStoreDest = [](const Instruction *Inst,
                                     const Value *Ptr) -> bool {
       if (auto *SI = dyn_cast<StoreInst>(Inst))
@@ -654,10 +663,14 @@ class ClobberWalker {
       return false;
     };
 
+    // 👉 def_chain 就像往上翻存檔版本，從目前的記憶體操作一路往上追到上一個定義
+    // 直到遇到 phi（多路合併點）或 LiveOnEntryDef（最初狀態）。
     for (MemoryAccess *Current : def_chain(Desc.Last)) {
       Desc.Last = Current;
 
       // Respect explicit stopping points.
+      // 如果走到指定的 StopAt 或 SkipStopAt，
+      // 就算還沒真的找到「擦黑板的人」，也要乖乖停下來。
       if (Current == StopAt || Current == SkipStopAt)
         return {Current, false};
 
@@ -672,6 +685,8 @@ class ClobberWalker {
         Instruction *DefI = MD->getMemoryInst();
 
         // --- Fast path 1: load-vs-load reordering check ------------------
+        // 用 dyn_cast<LoadInst> 檢查 DefI 和 Query->Inst 是否都是 Load 指令，
+        // 只有兩個都是 load 才需要進一步檢查 alias 與重排約束
         if (auto *DefLoad = dyn_cast<LoadInst>(DefI)) {
           if (auto *UseLoad = dyn_cast_or_null<LoadInst>(Query->Inst)) {
             // 只有在兩個 load 可能 alias 時，才需要考慮重排約束
