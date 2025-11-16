@@ -71,7 +71,7 @@ char RegAllocSegmentTree::ID = 0;
 
 // 讓 llc/clang 能用 -regalloc=segtre 選到你
 static llvm::RegisterRegAlloc
-  RAReg("segtre",                           // 選項名稱
+  RAReg("segmenttree",                           // 選項名稱
         "Segment Tree Register Allocator",  // 說明文字
         llvm::createRegAllocSegmentTree);   // 工廠函式（見下一步）
 
@@ -188,6 +188,7 @@ bool RegAllocSegmentTree::runOnMachineFunction(MachineFunction &MF) {
     if (VRM->hasPhys(VirtReg)) continue;
     if (unsigned PhysReg = tryAllocateRegister(LI)) {
       VRM->assignVirt2Phys(VirtReg, PhysReg);
+      Matrix->assign(LI, PhysReg);  // ★ 加入這行！
       updateSegmentTreeForInterval(LI, PhysReg);
       continue;
     }
@@ -254,8 +255,10 @@ bool RegAllocSegmentTree::runOnMachineFunction(MachineFunction &MF) {
   }
 
   // 输出时间信息
-  errs() << "  Time breakdown:\n";
-  TimerGroupObj->print(errs());  // 输出整个组的时间
+  if (TimePassesIsEnabled && TimerGroupObj) {
+    errs() << "  Time breakdown:\n";
+    TimerGroupObj->print(errs());
+  }
   
   errs() << "==========================================\n";
 
@@ -466,7 +469,10 @@ MCRegister RegAllocSegmentTree::performSplitAtPoint(const LiveInterval &VirtReg,
 }
 
 void RegAllocSegmentTree::precomputeAllCoordinates() {
-  TimeRegion TR(*PrecomputeTimer);
+  std::unique_ptr<TimeRegion> TR;
+  if (TimePassesIsEnabled && PrecomputeTimer) {
+    TR = std::make_unique<TimeRegion>(*PrecomputeTimer);
+  }
   // 收集所有虚拟寄存器的所有区间端点
   std::set<SlotIndex> allTimePoints;
   
@@ -492,22 +498,6 @@ void RegAllocSegmentTree::precomputeAllCoordinates() {
     PRCoords[P] = GlobalCoords;
     segtreeBuild(P);
   }
-
-// 添加所有物理寄存器的区间端点（如果有的话）
-//   for (unsigned PhysReg = 0; PhysReg < TRI->getNumRegs(); ++PhysReg) {
-//     for (const auto &Interval : PhysRegIntervals[PhysReg]) {
-//       allTimePoints.insert(Interval.first);
-//       allTimePoints.insert(Interval.second);
-//     }
-//   }
-  
-//   // 为每个物理寄存器设置相同的坐标点
-//   for (unsigned PhysReg = 0; PhysReg < PRCoords.size(); ++PhysReg) {
-//     if (PhysReg >= TRI->getNumRegs()) continue;
-    
-//     PRCoords[PhysReg].assign(allTimePoints.begin(), allTimePoints.end());
-//     segtreeBuild(PhysReg);
-//   }
 }
 
 void RegAllocSegmentTree::precomputeGlobalCoords() {
@@ -582,10 +572,17 @@ unsigned RegAllocSegmentTree::tryAllocateRegister(LiveInterval &VirtReg) {
 
 bool RegAllocSegmentTree::isPhysRegAvailable(unsigned PhysReg,
                                              const LiveInterval &LI) {
-  TimeRegion TR(*SegTreeQueryTimer);
+  std::unique_ptr<TimeRegion> TR;
+  if (TimePassesIsEnabled && SegTreeQueryTimer) {
+    TR = std::make_unique<TimeRegion>(*SegTreeQueryTimer);
+  }
   
   if (PhysReg == 0) return false;
   
+  if (Matrix->checkInterference(LI, PhysReg) != LiveRegMatrix::IK_Free) {
+    return false;
+  }
+
   TRI = MF->getSubtarget().getRegisterInfo();
 
   for (MCRegAliasIterator AI(PhysReg, TRI, /*IncludeSelf=*/true); AI.isValid(); ++AI) {
@@ -662,7 +659,10 @@ int RegAllocSegmentTree::segtreeQueryMaxIter(unsigned PhysReg, unsigned l, unsig
 }
 
 void RegAllocSegmentTree::updateSegmentTreeForPhysReg(unsigned PhysReg, SlotIndex Start, SlotIndex End) {
-  TimeRegion TR(*SegTreeUpdateTimer);
+  std::unique_ptr<TimeRegion> TR;
+  if (TimePassesIsEnabled && SegTreeUpdateTimer) {
+    TR = std::make_unique<TimeRegion>(*SegTreeUpdateTimer);
+  }
 
   assert(Register::isPhysicalRegister(PhysReg) && "expected physreg");
   assert(PhysReg < PRCoords.size() && PhysReg < PRTree.size() &&
@@ -871,7 +871,10 @@ void RegAllocSegmentTree::segtreeBuild(unsigned PhysReg) {
 }
 
 void RegAllocSegmentTree::spillVirtReg(LiveInterval &VirtReg) {
-  TimeRegion TR(*SpillTimer);
+  std::unique_ptr<TimeRegion> TR;
+  if (TimePassesIsEnabled && SpillTimer) {
+    TR = std::make_unique<TimeRegion>(*SpillTimer);
+  }
   assert(MF && LIS && VRM);
   LLVM_DEBUG(dbgs() << "Spilling vreg " << VirtReg.reg() << '\n');
 
@@ -973,7 +976,10 @@ void RegAllocSegmentTree::resetAllocatorState() {
 void RegAllocSegmentTree::postOptimization(Spiller &VRegSpiller, LiveIntervals &LIS) {
   // 调用基类的 postOptimization 方法（如果存在）
   // RegAllocBase::postOptimization();
-  TimeRegion TR(*PostOptTimer);
+  std::unique_ptr<TimeRegion> TR;
+  if (TimePassesIsEnabled && PostOptTimer) {
+    TR = std::make_unique<TimeRegion>(*PostOptTimer);
+  }
 
   // 执行 Spiller 的后优化
   VRegSpiller.postOptimization();
@@ -1017,7 +1023,10 @@ void RegAllocSegmentTree::postOptimization(Spiller &VRegSpiller, LiveIntervals &
 
 void RegAllocSegmentTree::cleanupFailedVReg(Register FailedVReg, unsigned Depth,
                                             SmallVectorImpl<Register> &SplitRegs) {
-  TimeRegion TR(*CleanupTimer);
+  std::unique_ptr<TimeRegion> TR;
+  if (TimePassesIsEnabled && CleanupTimer) {
+    TR = std::make_unique<TimeRegion>(*CleanupTimer);
+  }
   
   // 防止無限遞歸
   if (Depth > 10) {
