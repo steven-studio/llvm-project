@@ -187,7 +187,12 @@ bool RegAllocSegmentTree::runOnMachineFunction(MachineFunction &MF) {
     unsigned VirtReg = LI.reg();
     if (VRM->hasPhys(VirtReg)) continue;
     if (unsigned PhysReg = tryAllocateRegister(LI)) {
-      VRM->assignVirt2Phys(VirtReg, PhysReg);
+      // 重要：再次確認
+      if (VRM->hasPhys(VirtReg)) {
+          LLVM_DEBUG(dbgs() << "ERROR: Already assigned!\n");
+          continue;
+      }
+      // VRM->assignVirt2Phys(VirtReg, PhysReg);
       Matrix->assign(LI, PhysReg);  // ★ 加入這行！
       updateSegmentTreeForInterval(LI, PhysReg);
       continue;
@@ -369,28 +374,6 @@ MCRegister RegAllocSegmentTree::selectOrSplit(const LiveInterval &VirtReg,
   // 返回0表示已經進行了溢出/拆分，需要進一步處理新產生的虛擬寄存器
   return 0;
 }
-
-// MCRegister RegAllocSegmentTree::selectOrSplitAdvanced(const LiveInterval &VirtReg,
-//                                                      SmallVectorImpl<Register> &splitLVRs) {
-//   // 首先嘗試直接分配
-//   unsigned PhysReg = tryAllocateRegister(const_cast<LiveInterval&>(VirtReg));
-//   if (PhysReg) return PhysReg;
-  
-//   // 根據生命期特性選擇分割策略
-//   if (LIS->intervalIsInOneMBB(VirtReg)) {
-//     // 局部區間：使用本地分割策略
-//     TimeRegion TR(*LocalSplitTimer);
-//     return tryLocalSplit(VirtReg, splitLVRs);
-//   } else {
-//     // 全域區間：先嘗試區域分割，再嘗試塊分割
-//     TimeRegion TR(*GlobalSplitTimer);
-//     MCRegister Result = tryRegionSplit(VirtReg, splitLVRs);
-//     if (Result) return Result;
-    
-//     TimeRegion TR2(*BlockSplitTimer);
-//     return tryBlockSplit(VirtReg, splitLVRs);
-//   }
-// }
 
 void RegAllocSegmentTree::init(VirtRegMap &vrm, LiveIntervals &lis,
                                         LiveRegMatrix &mat) {
@@ -578,10 +561,6 @@ bool RegAllocSegmentTree::isPhysRegAvailable(unsigned PhysReg,
   }
   
   if (PhysReg == 0) return false;
-  
-  if (Matrix->checkInterference(LI, PhysReg) != LiveRegMatrix::IK_Free) {
-    return false;
-  }
 
   TRI = MF->getSubtarget().getRegisterInfo();
 
@@ -595,15 +574,24 @@ bool RegAllocSegmentTree::isPhysRegAvailable(unsigned PhysReg,
       const auto &tree   = PRTree[A];
       if (coords.size() < 2 || tree.empty()) continue;
 
-      unsigned l = coordIndex(A, Seg.start);
-      unsigned r = coordIndex(A, Seg.end);
+      auto itL = std::lower_bound(coords.begin(), coords.end(), Seg.start);
+      auto itR = std::lower_bound(coords.begin(), coords.end(), Seg.end);
+
+      // 如果這個段的端點不在 coords 裡，就跳過 segtree，用 Matrix 負責
+      if (itL == coords.end() || *itL != Seg.start ||
+          itR == coords.end() || *itR != Seg.end) {
+        continue;
+      }
+
+      unsigned l = itL - coords.begin();
+      unsigned r = itR - coords.begin();
       if (l >= r) continue;
 
       int mx = segtreeQueryMax(A, 1, 0, (unsigned)coords.size()-2, l, r-1);
       if (mx > 0) return false;   // 任一段已有占用 → 不可放
     }
   }
-  return true;
+  return Matrix->checkInterference(LI, PhysReg) == LiveRegMatrix::IK_Free;
 }
 
 int RegAllocSegmentTree::segtreeQueryMax(unsigned PhysReg, unsigned idx,
@@ -680,15 +668,15 @@ void RegAllocSegmentTree::updateSegmentTreeForPhysReg(unsigned PhysReg, SlotInde
   auto endIt   = std::lower_bound(Coords.begin(), Coords.end(), End);
   
   // 确保坐标点存在
-  if (startIt == PRCoords[PhysReg].end() || *startIt != Start ||
-      endIt == PRCoords[PhysReg].end() || *endIt != End) {
-    // errs() << "[segtre][ERROR] Missing coordinate in PRCoords for PhysReg "
-    //        << PhysReg << " interval [" << Start << ", " << End << ")\n";
-    // dbgs() << "  Did you forget to call precomputeAllCoordinates() after spill?\n";
-    llvm_unreachable("updateSegmentTreeForPhysReg: coordinate not found!");
+  if (startIt == Coords.end() || *startIt != Start ||
+      endIt == Coords.end() || *endIt != End) {
+    LLVM_DEBUG(dbgs() << "[segtre][WARN] missing coords for interval on "
+                      << PhysReg << " [" << Start << "," << End << ")\n");
+    // 先至少記錄下來，之後如果你實作完整重建，可用 PhysRegIntervals 重播
+    PhysRegIntervals[PhysReg].emplace_back(Start, End);
     return;
   }
-  
+
   unsigned startIdx = startIt - Coords.begin();
   unsigned endIdx = endIt - Coords.begin();
   
@@ -705,43 +693,6 @@ void RegAllocSegmentTree::updateSegmentTreeForPhysReg(unsigned PhysReg, SlotInde
                     << " with interval [" << Start << ", " << End << ")\n");
 }
 
-// void RegAllocSegmentTree::ensureCoordsAndTree(unsigned PhysReg, SlotIndex S, SlotIndex E) {
-//   auto &Coords = PRCoords[PhysReg];
-//   auto &Tree = PRTree[PhysReg];
-  
-//   // 检查是否需要添加新的坐标点
-//   bool changed = false;
-  
-//   // 检查起点 S
-//   auto it = std::lower_bound(Coords.begin(), Coords.end(), S);
-//   if (it == Coords.end() || *it != S) {
-//     Coords.insert(it, S);
-//     changed = true;
-//   }
-  
-//   // 检查终点 E
-//   it = std::lower_bound(Coords.begin(), Coords.end(), E);
-//   if (it == Coords.end() || *it != E) {
-//     Coords.insert(it, E);
-//     changed = true;
-//   }
-  
-//   // 如果坐标发生了变化，需要重建线段树
-//   if (changed) {
-//     for (const auto &Interval : Intervals) {
-//       SlotIndex Start = Interval.first;
-//       SlotIndex End = Interval.second;
-      
-//       // 获取坐标索引
-//       unsigned l = coordIndex(PhysReg, Start);
-//       unsigned r = coordIndex(PhysReg, End) - 1; // 线段树区间是 [l, r-1]
-      
-//       // 更新线段树
-//       segtreeUpdate(PhysReg, 1, 0, Coords.size() - 2, l, r, 1);
-//     }
-//   }
-// }
-
 void RegAllocSegmentTree::ensureCoordsForPhysReg(unsigned PhysReg) {
   if (!PRCoords[PhysReg].empty()) return;
   
@@ -751,22 +702,6 @@ void RegAllocSegmentTree::ensureCoordsForPhysReg(unsigned PhysReg) {
     points.insert(Interval.first);
     points.insert(Interval.second);
   }
-
-//   // 添加所有虛擬寄存器的端點（這部分可以進一步優化）
-//   for (unsigned i = 0, e = MF->getRegInfo().getNumVirtRegs(); i != e; ++i) {
-//     unsigned Reg = Register::index2VirtReg(i);
-//     if (MF->getRegInfo().reg_nodbg_empty(Reg))
-//       continue;
-    
-//     LiveInterval *LI = &LIS->getInterval(Reg);
-//     if (LI->empty())
-//       continue;
-    
-//     for (const auto &Seg : *LI) {
-//       points.insert(Seg.start);
-//       points.insert(Seg.end);
-//     }
-//   }
   
   PRCoords[PhysReg].assign(points.begin(), points.end());
   segtreeBuild(PhysReg);
