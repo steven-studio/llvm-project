@@ -44,6 +44,22 @@ func.func @subview_of_size_memcast(%arg : memref<4x6x16x32xi8>) ->
 
 // -----
 
+// Do not fold the cast into the subview if the subview would be statically
+// out-of-bounds on the cast source: the folded op would not verify.
+
+// CHECK-LABEL: func @negative_subview_of_memcast_out_of_bounds
+//  CHECK-SAME:   %[[ARG0:.[a-z0-9A-Z_]+]]: memref<4xf32>
+//       CHECK:   %[[C:.+]] = memref.cast %[[ARG0]] : memref<4xf32> to memref<?xf32>
+//       CHECK:   %[[S:.+]] = memref.subview %[[C]][4] [1] [1] : memref<?xf32> to memref<1xf32, strided<[1], offset: 4>>
+//       CHECK:   return %[[S]]
+func.func @negative_subview_of_memcast_out_of_bounds(%arg : memref<4xf32>) -> memref<1xf32, strided<[1], offset: 4>> {
+  %0 = memref.cast %arg : memref<4xf32> to memref<?xf32>
+  %1 = memref.subview %0[4] [1] [1] : memref<?xf32> to memref<1xf32, strided<[1], offset: 4>>
+  return %1 : memref<1xf32, strided<[1], offset: 4>>
+}
+
+// -----
+
 //       CHECK: func @subview_of_strides_memcast
 //  CHECK-SAME:   %[[ARG0:.[a-z0-9A-Z_]+]]: memref<1x1x?xf32, strided{{.*}}>
 //       CHECK:   %[[S:.+]] = memref.subview %[[ARG0]][0, 0, 0] [1, 1, 4]

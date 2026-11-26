@@ -3621,13 +3621,22 @@ public:
     if (!CastOp::canFoldIntoConsumerOp(castOp))
       return failure();
 
+    // The cast source may have more static dimensions than the current
+    // subview source. Do not fold if the subview would statically run
+    // out-of-bounds on the cast source: the new op would not verify.
+    auto castSrcType = llvm::cast<MemRefType>(castOp.getSource().getType());
+    SliceBoundsVerificationResult sliceResult = verifyInBoundsSlice(
+        castSrcType.getShape(), subViewOp.getMixedOffsets(),
+        subViewOp.getMixedSizes(), subViewOp.getMixedStrides());
+    if (!sliceResult.isValid)
+      return failure();
+
     // Compute the SubViewOp result type after folding the MemRefCastOp. Use
     // the MemRefCastOp source operand type to infer the result type and the
     // current SubViewOp source operand type to compute the dropped dimensions
     // if the operation is rank-reducing.
     auto resultType = getCanonicalSubViewResultType(
-        subViewOp.getType(), subViewOp.getSourceType(),
-        llvm::cast<MemRefType>(castOp.getSource().getType()),
+        subViewOp.getType(), subViewOp.getSourceType(), castSrcType,
         subViewOp.getMixedOffsets(), subViewOp.getMixedSizes(),
         subViewOp.getMixedStrides());
     if (!resultType)
